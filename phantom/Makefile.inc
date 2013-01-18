@@ -25,6 +25,7 @@ $(eval $(call MODULE,io_stream/proto_http/handler_fcgi))
 
 $(eval $(call MODULE,io_benchmark,,,m pthread))
 $(eval $(call MODULE,io_benchmark/method_elliptics,,,elliptics_cpp))
+$(eval $(call MODULE,io_benchmark/method_elliptics/source_log,,,))
 $(eval $(call MODULE,io_benchmark/method_stream,,,pthread))
 $(eval $(call MODULE,io_benchmark/method_stream/ipv4,,,pthread))
 $(eval $(call MODULE,io_benchmark/method_stream/ipv6,,,pthread))
