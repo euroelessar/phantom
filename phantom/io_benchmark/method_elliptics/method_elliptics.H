@@ -42,6 +42,7 @@ public:
 
 private:
 	elliptics_logger_t logger;
+	dnet_config cfg;
 	elliptics_node_t node;
 	source_t &source;
 
@@ -52,7 +53,7 @@ private:
 		inline ~loggers_t() throw() { if(items) delete [] items; }
 
 		void commit(
-			in_segment_t const &request, in_segment_t &tag, result_t const &res
+			in_segment_t const &request, in_segment_t const &tag, result_t const &res
 		) const;
 
 	} loggers;
@@ -73,6 +74,11 @@ public:
 		string_t logger_filename;
 		config::objptr_t<source_t> source;
 		config::list_t<config::objptr_t<logger_t> > loggers;
+		unsigned int wait_timeout;
+		long check_timeout;
+		int flags;
+		int io_thread_num;
+		int net_thread_num;
 
 		config_t() throw();
 		void check(in_t::ptr_t const &ptr) const;

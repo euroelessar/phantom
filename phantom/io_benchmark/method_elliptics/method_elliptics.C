@@ -11,6 +11,7 @@
 #include "../../module.H"
 
 #include <pd/bq/bq_util.H>
+#include <pd/bq/bq_cond.H>
 #include <pd/base/exception.H>
 
 namespace phantom {
@@ -19,7 +20,9 @@ namespace io_benchmark {
 MODULE(io_benchmark_method_elliptics);
 
 method_elliptics_t::config_t::config_t() throw() :
-	logger_filename(STRING("/dev/null")) {
+	logger_filename(STRING("/dev/null")), wait_timeout(5),
+	check_timeout(20), flags(0), io_thread_num(1),
+	net_thread_num(1) {
 }
 
 void method_elliptics_t::config_t::check(const in_t::ptr_t &ptr) const {
@@ -31,7 +34,7 @@ void method_elliptics_t::config_t::check(const in_t::ptr_t &ptr) const {
 }
 
 void method_elliptics_t::loggers_t::commit(
-	in_segment_t const &request, in_segment_t &tag, result_t const &res
+	in_segment_t const &request, in_segment_t const &tag, result_t const &res
 ) const {
 	for(size_t i = 0; i < size; ++i) {
 		logger_t *logger = items[i];
@@ -48,6 +51,11 @@ config_binding_value(method_elliptics_t, source);
 config_binding_value(method_elliptics_t, logger_filename);
 config_binding_type(method_elliptics_t, logger_t);
 config_binding_value(method_elliptics_t, loggers);
+config_binding_value(method_elliptics_t, wait_timeout);
+config_binding_value(method_elliptics_t, flags);
+config_binding_value(method_elliptics_t, check_timeout);
+config_binding_value(method_elliptics_t, io_thread_num);
+config_binding_value(method_elliptics_t, net_thread_num);
 config_binding_ctor(method_t, method_elliptics_t);
 }
 
@@ -59,17 +67,39 @@ static ioremap::elliptics::logger create_logger(const method_elliptics_t::config
 		return method_elliptics_t::elliptics_file_logger_t(logger_filename, DNET_LOG_ERROR);
 }
 
+static dnet_config create_config(const method_elliptics_t::config_t &config) {
+	dnet_config cfg;
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.wait_timeout = config.wait_timeout;
+	cfg.flags = config.flags;
+	cfg.check_timeout = config.check_timeout;
+	cfg.io_thread_num = config.io_thread_num;
+	cfg.net_thread_num = config.net_thread_num;
+	return cfg;
+}
+
 method_elliptics_t::method_elliptics_t(const string_t &, const config_t &config) :
-	method_t(), logger(create_logger(config)), node(logger),
-	source(*config.source) {
+	method_t(), logger(create_logger(config)), cfg(create_config(config)),
+	node(logger, cfg), source(*config.source) {
 
 	dnet_config cfg;
 	memset(&cfg, 0, sizeof(cfg));
+
+	node.set_timeouts(15, 15);
 
 	for(typeof(config.remotes.ptr()) rptr = config.remotes; rptr; ++rptr) {
 		MKCSTR(remote, rptr.val());
 		node.add_remote(remote);
 	}
+
+	for(typeof(config.loggers.ptr()) lptr = config.loggers; lptr; ++lptr)
+		++loggers.size;
+
+	loggers.items = new logger_t *[loggers.size];
+
+	size_t i = 0;
+	for(typeof(config.loggers.ptr()) lptr = config.loggers; lptr; ++lptr)
+		loggers.items[i++] = lptr.val();
 }
 
 method_elliptics_t::~method_elliptics_t() throw() {
@@ -83,34 +113,129 @@ static inline std::string make_string(in_segment_t &in)
 	return string;
 }
 
+struct method_elliptics_handler_t
+{
+	std::exception_ptr *exception;
+	bq_cond_t *cond;
+	timeval_t *time_recv;
+	size_t *size_in;
+
+	template <typename T>
+	void operator() (const ioremap::elliptics::array_result_holder<T> &result)
+	{
+		if ((*exception = result.exception())) {
+			finish();
+			return;
+		}
+
+		for (size_t i = 0; i < result.size(); ++i)
+			*size_in += result[i].raw_data().size();
+
+		finish();
+	}
+
+	template <typename T>
+	void operator() (const ioremap::elliptics::result_holder<T> &result)
+	{
+		if ((*exception = result.exception())) {
+			finish();
+			return;
+		}
+
+		*size_in += result->raw_data().size();
+
+		finish();
+	}
+
+	void operator() (const std::exception_ptr &exc)
+	{
+		*exception = exc;
+		finish();
+	}
+
+	void finish()
+	{
+		bq_cond_guard_t guard(*cond);
+		*time_recv = timeval_current();
+		cond->send();
+	}
+};
+
 bool method_elliptics_t::test(stat_t &stat) const
 {
 	request_t request;
 	if (!source.get_request(request))
 		return false;
 
+	stat_t::tcount_guard_t tcount_guard(stat);
+	result_t result;
+
+	elliptics_session_t session(node);
+
+	session.set_cflags(request.cflags);
+	session.set_ioflags(request.ioflags);
+	session.set_groups(request.groups);
+	result.size_out += request.groups.size() * sizeof(dnet_cmd);
+	result.size_in += request.groups.size() * sizeof(dnet_cmd);
+
+	ioremap::elliptics::key id(make_string(request.filename));
+
 	try {
-		stat_t::tcount_guard_t tcount_guard(stat);
-
-		elliptics_session_t session(node);
-
-		session.set_cflags(request.cflags);
-		session.set_ioflags(request.ioflags);
-		session.set_groups(request.groups);
-
-		ioremap::elliptics::key id(make_string(request.filename));
+		std::exception_ptr exception;
+		bq_cond_t cond;
+		method_elliptics_handler_t handler = {
+			&exception, &cond, &result.time_recv, &result.size_in
+		};
 
 		switch (request.command) {
 		case method_elliptics::write_data:
-			session.write_data(id, make_string(request.data), request.offset);
+			result.size_out += request.groups.size() * request.data.size();
+			session.write_data(handler, id, make_string(request.data), request.offset);
 			break;
 		case method_elliptics::read_data:
-			session.read_data(id, request.offset, request.size);
+			session.read_data(handler, id, request.offset, request.size);
 			break;
 		case method_elliptics::remove_data:
-			session.remove(id);
+			session.remove(handler, id);
 			break;
 		}
+
+		result.time_conn = timeval_current();
+		result.time_send = result.time_conn;
+
+		{
+			bq_cond_guard_t guard(cond);
+			if (!result.time_recv.is_real() && !bq_success(cond.wait(NULL)))
+				throw exception_sys_t(log::error, errno, "cond.wait: %m");
+		}
+
+		result.time_end = timeval_current();
+
+		if (exception) {
+			try {
+				std::rethrow_exception(exception);
+			} catch (const ioremap::elliptics::error &e) {
+				result.err = -e.error_code();
+			} catch (const std::bad_alloc &e) {
+				result.err = ENOMEM;
+			}
+		}
+
+		{
+			thr::spinlock_guard_t guard(stat.spinlock);
+
+			stat.update_time(result.time_end - result.time_start,
+							 result.time_end - result.time_send);
+
+			stat.update(0, result.err);
+			if (!result.err)
+				stat.update_size(result.size_in, result.size_out);
+		}
+
+		in_segment_list_t request_segment;
+		in_segment_list_t tag_segment;
+
+		loggers.commit(request_segment, tag_segment, result);
 	} catch (const ioremap::elliptics::error &e) {
 		throw exception_sys_t(log::error, e.error_code(), "%s", e.what());
 	}
@@ -144,7 +269,7 @@ class network_descr_t : public descr_t {
 	virtual size_t value_max() const { return max_errno; }
 
 	virtual void print_header(out_t &out) const {
-		out(CSTR("network"));
+		out(CSTR("elliptics"));
 	}
 
 	virtual void print_value(out_t &out, size_t value) const {
@@ -164,9 +289,8 @@ public:
 
 static network_descr_t const network_descr;
 
-const descr_t *method_elliptics_t::descr(size_t ind) const throw()
+const descr_t *method_elliptics_t::descr(size_t) const throw()
 {
-	(void) ind;
 	return &network_descr;
 }
 
