@@ -1,0 +1,20 @@
+0 0 0 1:2:3 just_key 0
+write 0 12
+|just_value|
+
+0 0 0 1:2:3 just_key2
+write 0 13
+|just_value2|
+
+0 0 0 1:2:3 just_key
+read
+
+0 0 0 1:2:3 just_key2
+read 1 11
+
+-1
+
+{time, msec} {cflags} {ioflags} {groups} {filename} {type?}
+{command} {offset?} {size?}
+{data, must be omitted for any except write}
+
