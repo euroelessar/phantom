@@ -25,7 +25,10 @@
 
 namespace phantom { namespace io_benchmark { namespace method_elliptics {
 
-enum { LINE_LENGTH = 1024 };
+enum {
+	LINE_LENGTH = 1024,
+	TAG_LEN = 256
+};
 
 MODULE(io_benchmark_method_elliptics_source_log);
 
@@ -86,6 +89,8 @@ bool log_file_t::get_request(
 			throw exception_log_t(log::error, "format error #1");
 		++ptr;
 
+		in_t::ptr_t startp = ptr;
+
 		ptr.parse(request.cflags, &error_handler);
 		if(*ptr != ' ')
 			throw exception_log_t(log::error, "format error #2");
@@ -121,8 +126,24 @@ bool log_file_t::get_request(
 			request.type = 0;
 		}
 
+		if(*ptr == ' ') {
+			in_t::ptr_t tagp = ++ptr;
+			size_t limit = TAG_LEN;
+			if(!ptr.scan("\n", 1, limit))
+				throw exception_log_t(log::error, "format error #6");
+
+			limit = ptr - tagp;
+			if(tagp.scan("\t", 1, limit))
+				throw exception_log_t(log::error, "format error #7");
+
+			request.tag = in_segment_t(tagp, ptr - tagp);
+		}
+		else {
+			request.tag = in_segment_t();
+		}
+
 		if (*ptr != '\n')
-			throw exception_log_t(log::error, "format error #6");
+			throw exception_log_t(log::error, "format error #8");
 		++ptr;
 
 		limit = LINE_LENGTH;
@@ -145,10 +166,10 @@ bool log_file_t::get_request(
 			linep += remove_command.size();
 			request.command = remove_data;
 		} else {
-			throw exception_log_t(log::error, "format error #7");
+			throw exception_log_t(log::error, "format error #9");
 		}
 		if (*ptr != ' ' && *ptr != '\n')
-			throw exception_log_t(log::error, "format error #8");
+			throw exception_log_t(log::error, "format error #10");
 
 		if (*ptr == ' ') {
 			++ptr;
@@ -165,7 +186,9 @@ bool log_file_t::get_request(
 		}
 
 		if (*ptr != '\n')
-			throw exception_log_t(log::error, "format error #9");
+			throw exception_log_t(log::error, "format error #11");
+
+		request.request = in_segment_t(startp, ptr - startp);
 
 		++ptr;
 
@@ -176,13 +199,13 @@ bool log_file_t::get_request(
 			ptr += request.size;
 
 			if (*ptr != '\n')
-				throw exception_log_t(log::error, "format error #10");
+				throw exception_log_t(log::error, "format error #12");
 
 			++ptr;
 		}
 
 		if (*ptr != '\n')
-			throw exception_log_t(log::error, "format error #11");
+			throw exception_log_t(log::error, "format error #13");
 
 		++ptr;
 

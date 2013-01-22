@@ -33,6 +33,9 @@ struct request_t {
 	in_segment_t filename;
 	int type;
 
+	in_segment_t request;
+	in_segment_t tag;
+
 	uint64_t offset;
 	uint64_t size;
 	in_segment_t data;

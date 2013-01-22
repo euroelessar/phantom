@@ -60,11 +60,17 @@ config_binding_ctor(method_t, method_elliptics_t);
 }
 
 static ioremap::elliptics::logger create_logger(const method_elliptics_t::config_t &config) {
-	MKCSTR(logger_filename, config.logger_filename);
-	if (strcmp(logger_filename, "/dev/null") == 0)
-		return method_elliptics_t::elliptics_logger_t(0, DNET_LOG_ERROR);
-	else
-		return method_elliptics_t::elliptics_file_logger_t(logger_filename, DNET_LOG_ERROR);
+	try {
+		MKCSTR(logger_filename, config.logger_filename);
+		if (strcmp(logger_filename, "/dev/null") == 0)
+			return method_elliptics_t::elliptics_logger_t(0, DNET_LOG_ERROR);
+		else
+			return method_elliptics_t::elliptics_file_logger_t(logger_filename, DNET_LOG_ERROR);
+	} catch (const ioremap::elliptics::error &e) {
+		throw exception_sys_t(log::error, e.error_code(), "%s", e.what());
+	} catch (const std::exception &e) {
+		throw exception_sys_t(log::error, 0, "%s", e.what());
+	}
 }
 
 static dnet_config create_config(const method_elliptics_t::config_t &config) {
@@ -82,14 +88,15 @@ method_elliptics_t::method_elliptics_t(const string_t &, const config_t &config)
 	method_t(), logger(create_logger(config)), cfg(create_config(config)),
 	node(logger, cfg), source(*config.source) {
 
-	dnet_config cfg;
-	memset(&cfg, 0, sizeof(cfg));
-
-	node.set_timeouts(15, 15);
-
-	for(typeof(config.remotes.ptr()) rptr = config.remotes; rptr; ++rptr) {
-		MKCSTR(remote, rptr.val());
-		node.add_remote(remote);
+	try {
+		for(typeof(config.remotes.ptr()) rptr = config.remotes; rptr; ++rptr) {
+			MKCSTR(remote, rptr.val());
+			node.add_remote(remote);
+		}
+	} catch (const ioremap::elliptics::error &e) {
+		throw exception_sys_t(log::error, e.error_code(), "%s", e.what());
+	} catch (const std::exception &e) {
+		throw exception_sys_t(log::error, 0, "%s", e.what());
 	}
 
 	for(typeof(config.loggers.ptr()) lptr = config.loggers; lptr; ++lptr)
@@ -212,13 +219,21 @@ bool method_elliptics_t::test(stat_t &stat) const
 		result.time_end = timeval_current();
 
 		if (exception) {
+			result.log_level = logger_t::proto_warning;
 			try {
 				std::rethrow_exception(exception);
+			} catch (const ioremap::elliptics::not_found_error &e) {
+				result.err = -e.error_code();
+				result.proto_code = 404;
 			} catch (const ioremap::elliptics::error &e) {
 				result.err = -e.error_code();
+				result.proto_code = 500;
 			} catch (const std::bad_alloc &e) {
 				result.err = ENOMEM;
+				result.proto_code = 500;
 			}
+		} else {
+			result.proto_code = 200;
 		}
 
 		{
@@ -232,12 +247,11 @@ bool method_elliptics_t::test(stat_t &stat) const
 				stat.update_size(result.size_in, result.size_out);
 		}
 
-		in_segment_list_t request_segment;
-		in_segment_list_t tag_segment;
-
-		loggers.commit(request_segment, tag_segment, result);
+		loggers.commit(request.request, request.tag, result);
 	} catch (const ioremap::elliptics::error &e) {
 		throw exception_sys_t(log::error, e.error_code(), "%s", e.what());
+	} catch (const std::exception &e) {
+		throw exception_sys_t(log::error, 0, "%s", e.what());
 	}
 
 	return true;
