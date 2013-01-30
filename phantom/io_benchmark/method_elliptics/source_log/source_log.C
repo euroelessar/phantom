@@ -58,47 +58,71 @@ static void error_handler(in_t::ptr_t const &, char const *msg) {
 bool log_file_t::get_request(
 	request_t &request, interval_t &interval_sleep
 ) {
-	if(!work)
+	if (!work)
 		return false;
 
 	try {
-		int64_t msec = 0;
-		ptr.parse(msec, &error_handler);
+		size_t data_length = 0;
+		ptr.parse(data_length, &error_handler);
 
-		if (msec < 0) {
+		if(!data_length) {
 			work = false;
 			return false;
 		}
 
-		interval_t interval_request = msec * interval_millisecond;
+		if(*ptr == ' ') {
+			++ptr;
+			int64_t msec = 0;
+			ptr.parse(msec, &error_handler);
+			interval_t interval_request = msec * interval_millisecond;
 
-		interval_sleep =
-			interval_request - (timeval_current() - timeval_start);
+			interval_sleep =
+				interval_request - (timeval_current() - timeval_start);
 
-		if(interval_sleep < interval_zero) {
-			if (delta < -interval_sleep) {
-				delta = -interval_sleep;
+			if(interval_sleep < interval_zero) {
+				if (delta < -interval_sleep) {
+					delta = -interval_sleep;
 
-				if(delta_max < delta)
-					delta_max = delta;
+					if(delta_max < delta)
+						delta_max = delta;
+				}
+
+				interval_sleep = interval_zero;
 			}
-
-			interval_sleep = interval_zero;
 		}
-		if(*ptr != ' ')
-			throw exception_log_t(log::error, "format error #1");
+
+		if(*ptr == ' ') {
+			in_t::ptr_t tagp = ++ptr;
+			size_t limit = TAG_LEN;
+			if(!ptr.scan("\n", 1, limit))
+				throw exception_log_t(log::error, "format error #1");
+
+			limit = ptr - tagp;
+			if(tagp.scan("\t", 1, limit))
+				throw exception_log_t(log::error, "format error #2");
+
+			request.tag = in_segment_t(tagp, ptr - tagp);
+		}
+		else {
+			request.tag = in_segment_t();
+		}
+
+		if(*ptr != '\n')
+			throw exception_log_t(log::error, "format error #3");
 		++ptr;
 
-		in_t::ptr_t startp = ptr;
+		in_t::ptr_t endp = ptr + data_length;
+
+		request.request = in_segment_t(ptr, data_length);
 
 		ptr.parse(request.cflags, &error_handler);
 		if(*ptr != ' ')
-			throw exception_log_t(log::error, "format error #2");
+			throw exception_log_t(log::error, "format error #4");
 		++ptr;
 
 		ptr.parse(request.ioflags, &error_handler);
 		if(*ptr != ' ')
-			throw exception_log_t(log::error, "format error #3");
+			throw exception_log_t(log::error, "format error #5");
 
 		request.groups.resize(0);
 		int group_id;
@@ -109,13 +133,13 @@ bool log_file_t::get_request(
 			request.groups.push_back(group_id);
 		} while (*ptr == ':');
 		if(*ptr != ' ')
-			throw exception_log_t(log::error, "format error #4");
+			throw exception_log_t(log::error, "format error #6");
 		++ptr;
 
 		in_t::ptr_t filenamep = ptr;
 		size_t limit = LINE_LENGTH;
 		if (!ptr.scan(" \n", 2, limit))
-			throw exception_log_t(log::error, "format error #5");
+			throw exception_log_t(log::error, "format error #7");
 
 		request.filename = in_segment_t(filenamep, ptr - filenamep);
 
@@ -124,22 +148,6 @@ bool log_file_t::get_request(
 			ptr.parse(request.type, error_handler);
 		} else {
 			request.type = 0;
-		}
-
-		if(*ptr == ' ') {
-			in_t::ptr_t tagp = ++ptr;
-			size_t limit = TAG_LEN;
-			if(!ptr.scan("\n", 1, limit))
-				throw exception_log_t(log::error, "format error #6");
-
-			limit = ptr - tagp;
-			if(tagp.scan("\t", 1, limit))
-				throw exception_log_t(log::error, "format error #7");
-
-			request.tag = in_segment_t(tagp, ptr - tagp);
-		}
-		else {
-			request.tag = in_segment_t();
 		}
 
 		if (*ptr != '\n')
@@ -187,27 +195,25 @@ bool log_file_t::get_request(
 
 		if (*ptr != '\n')
 			throw exception_log_t(log::error, "format error #11");
-
-		request.request = in_segment_t(startp, ptr - startp);
-
 		++ptr;
 
 		if (request.command == write_data) {
-			request.data = in_segment_t(ptr, request.size);
-			MKCSTR(data, request.data);
-
-			ptr += request.size;
-
-			if (*ptr != '\n')
+			if (ptr == endp)
 				throw exception_log_t(log::error, "format error #12");
 
-			++ptr;
+			request.data = in_segment_t(ptr, endp - ptr - 1);
+		} else if (ptr != endp) {
+			throw exception_log_t(log::error, "format error #13");
 		}
 
+		ptr = endp;
+
 		if (*ptr != '\n')
-			throw exception_log_t(log::error, "format error #13");
+			throw exception_log_t(log::error, "format error #14");
 
 		++ptr;
+		if (*ptr == '\n')
+			throw exception_log_t(log::error, "format error #15");
 
 		in.truncate(ptr);
 	}

@@ -130,7 +130,7 @@ struct method_elliptics_handler_t
 	template <typename T>
 	void operator() (const ioremap::elliptics::array_result_holder<T> &result)
 	{
-		if ((*exception = result.exception())) {
+		if ((*exception = result.exception()) != std::exception_ptr()) {
 			finish();
 			return;
 		}
@@ -144,7 +144,7 @@ struct method_elliptics_handler_t
 	template <typename T>
 	void operator() (const ioremap::elliptics::result_holder<T> &result)
 	{
-		if ((*exception = result.exception())) {
+		if ((*exception = result.exception()) != std::exception_ptr()) {
 			finish();
 			return;
 		}
@@ -218,7 +218,7 @@ bool method_elliptics_t::test(stat_t &stat) const
 
 		result.time_end = timeval_current();
 
-		if (exception) {
+		if (exception != std::exception_ptr()) {
 			result.log_level = logger_t::proto_warning;
 			try {
 				std::rethrow_exception(exception);
@@ -242,7 +242,6 @@ bool method_elliptics_t::test(stat_t &stat) const
 			stat.update_time(result.time_end - result.time_start,
 							 result.time_end - result.time_send);
 
-			stat.update(0, result.err);
 			if (!result.err)
 				stat.update_size(result.size_in, result.size_out);
 		}
